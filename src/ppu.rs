@@ -1,17 +1,33 @@
 use std::{cell::RefCell, rc::Rc};
 
 use anyhow::Result;
+use image::{ImageBuffer, Rgba};
 
 use crate::{bus::PpuBus, mmc::Mmc};
 
+const VISIBLE_WIDTH: usize = 256;
+const VISIBLE_HEIGHT: usize = 240;
+const WIDTH: usize = 340;
+const HEIGHT: usize = 261;
+
 pub struct Ppu {
     bus: PpuBus,
+
+    pixels: ImageBuffer<Rgba<u8>, Vec<u8>>,
 }
 
 impl Ppu {
     pub fn new(mmc: Rc<RefCell<Box<dyn Mmc>>>) -> Self {
         let bus = PpuBus::new(mmc);
-        Self { bus }
+
+        Self {
+            bus,
+            pixels: ImageBuffer::new(VISIBLE_WIDTH as u32, VISIBLE_HEIGHT as u32),
+        }
+    }
+
+    pub fn render(&mut self) -> Result<Vec<u8>> {
+        Ok(self.pixels.clone().into_raw())
     }
 
     pub fn read_control1(&self) -> Result<u8> {

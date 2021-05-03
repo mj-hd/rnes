@@ -22,4 +22,8 @@ impl Nes {
     pub fn tick(&mut self) -> Result<()> {
         Ok(())
     }
+
+    pub fn render(&mut self) -> Result<Vec<u8>> {
+        self.ppu.borrow_mut().render()
+    }
 }
