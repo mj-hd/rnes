@@ -1,14 +1,27 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::mpsc::{Receiver, Sender},
+};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::{apu::Apu, mmc::Mmc, ppu::Ppu};
+
+pub enum CpuBusEvent {
+    RequestDma(u16, u8),
+}
 
 pub struct CpuBus {
     mmc: Rc<RefCell<Box<dyn Mmc>>>,
     ppu: Rc<RefCell<Ppu>>,
     apu: Rc<RefCell<Apu>>,
 
+    event: Receiver<CpuBusEvent>,
+    ppu_bus_sender: Sender<PpuBusEvent>,
+
+    pub cycles: u8,
+    pub stalls: u16,
     pub wram: [u8; 0x0800],
 }
 
@@ -17,12 +30,41 @@ impl CpuBus {
         mmc: Rc<RefCell<Box<dyn Mmc>>>,
         ppu: Rc<RefCell<Ppu>>,
         apu: Rc<RefCell<Apu>>,
+        event: Receiver<CpuBusEvent>,
+        ppu_bus_sender: Sender<PpuBusEvent>,
     ) -> Self {
         Self {
             mmc,
             ppu,
             apu,
+            ppu_bus_sender,
+            event,
+            cycles: 0,
+            stalls: 0,
             wram: [0; 0x0800],
+        }
+    }
+
+    pub fn tick(&mut self) -> Result<()> {
+        match self.event.try_recv() {
+            Ok(event) => match event {
+                CpuBusEvent::RequestDma(addr, oam_addr) => {
+                    let mut result = Vec::with_capacity(0x0100);
+
+                    for i in addr..(addr + 0x0100) {
+                        result.push(self.read(i)?);
+                    }
+
+                    self.ppu_bus_sender
+                        .send(PpuBusEvent::Dma(result, oam_addr))
+                        .context("failed to send ppu event")?;
+
+                    self.stalls += 513 + if self.cycles % 2 == 0 { 0 } else { 1 };
+
+                    Ok(())
+                }
+            },
+            _ => Ok(()),
         }
     }
 
@@ -42,14 +84,11 @@ impl CpuBus {
 
         match addr {
             0x0000..=0x07FF => Ok(self.wram[addr as usize]),
-            0x2000 => self.ppu.borrow().read_control1(),
-            0x2001 => self.ppu.borrow().read_control2(),
-            0x2002 => self.ppu.borrow().read_status(),
-            0x2003 => self.ppu.borrow().read_oam_addr(),
+            0x2000 => self.ppu.borrow().read_ctrl(),
+            0x2001 => self.ppu.borrow().read_mask(),
+            0x2002 => self.ppu.borrow_mut().read_status(),
             0x2004 => self.ppu.borrow().read_oam_data(),
-            0x2005 => self.ppu.borrow().read_scroll(),
-            0x2006 => self.ppu.borrow().read_vram_addr(),
-            0x2007 => self.ppu.borrow().read_vram_data(),
+            0x2007 => self.ppu.borrow_mut().read_vram_data(),
             0x4000 => self.apu.borrow().read_square_ch1_control1(),
             0x4001 => self.apu.borrow().read_square_ch1_control2(),
             0x4002 => self.apu.borrow().read_square_ch1_freq1(),
@@ -96,8 +135,8 @@ impl CpuBus {
                 self.wram[addr as usize] = data;
                 Ok(())
             }
-            0x2000 => self.ppu.borrow_mut().write_control1(data),
-            0x2001 => self.ppu.borrow_mut().write_control2(data),
+            0x2000 => self.ppu.borrow_mut().write_ctrl(data),
+            0x2001 => self.ppu.borrow_mut().write_mask(data),
             0x2002 => self.ppu.borrow_mut().write_status(data),
             0x2003 => self.ppu.borrow_mut().write_oam_addr(data),
             0x2004 => self.ppu.borrow_mut().write_oam_data(data),
@@ -130,19 +169,54 @@ impl CpuBus {
     }
 }
 
+pub enum PpuBusEvent {
+    Dma(Vec<u8>, u8),
+}
+
 pub struct PpuBus {
     mmc: Rc<RefCell<Box<dyn Mmc>>>,
+    event: Receiver<PpuBusEvent>,
+    cpu_bus_sender: Sender<CpuBusEvent>,
     pub vram: [u8; 0x0800],
     pub palette: [u8; 0x0020],
+    pub oam: [u8; 0x0100],
 }
 
 impl PpuBus {
-    pub fn new(mmc: Rc<RefCell<Box<dyn Mmc>>>) -> Self {
+    pub fn new(
+        mmc: Rc<RefCell<Box<dyn Mmc>>>,
+        event: Receiver<PpuBusEvent>,
+        cpu_bus_sender: Sender<CpuBusEvent>,
+    ) -> Self {
         Self {
             mmc,
+            event,
+            cpu_bus_sender,
             vram: [0; 0x0800],
             palette: [0; 0x0020],
+            oam: [0; 0x0100],
         }
+    }
+
+    pub fn tick(&mut self) -> Result<()> {
+        match self.event.try_recv() {
+            Ok(event) => match event {
+                PpuBusEvent::Dma(data, oam_addr) => {
+                    for addr in (oam_addr as usize)..self.oam.len() {
+                        self.oam[addr as usize] = data[addr as usize];
+                    }
+                }
+            },
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    pub fn request_dma(&mut self, cpu_addr: u16, oam_addr: u8) -> Result<()> {
+        self.cpu_bus_sender
+            .send(CpuBusEvent::RequestDma(cpu_addr, oam_addr))
+            .context("failed to send cpu event")
     }
 
     pub fn read_word(&self, addr: u16) -> Result<u16> {

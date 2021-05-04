@@ -1,10 +1,8 @@
-use std::{cell::RefCell, rc::Rc};
-
 use anyhow::Result;
 use bitfield::bitfield;
 use bitmatch::bitmatch;
 
-use crate::{apu::Apu, bus::CpuBus, mmc::Mmc, ppu::Ppu};
+use crate::bus::CpuBus;
 
 const STACK_BASE: u16 = 0x0100;
 
@@ -43,20 +41,13 @@ pub struct Cpu {
     p: P,
     pc: u16,
 
-    stalls: u8,
     halt: bool,
 
     bus: CpuBus,
 }
 
 impl Cpu {
-    pub fn new(
-        mmc: Rc<RefCell<Box<dyn Mmc>>>,
-        ppu: Rc<RefCell<Ppu>>,
-        apu: Rc<RefCell<Apu>>,
-    ) -> Self {
-        let bus = CpuBus::new(mmc, ppu, apu);
-
+    pub fn new(bus: CpuBus) -> Self {
         Self {
             a: 0,
             x: 0,
@@ -64,7 +55,6 @@ impl Cpu {
             s: 0xFD,
             p: P(0x34),
             pc: 0,
-            stalls: 0,
             halt: false,
             bus,
         }
@@ -77,14 +67,16 @@ impl Cpu {
         self.s = 0xFD;
         self.p = P(0x34);
         self.pc = self.bus.read_word(0xFFFC)?;
-        self.stalls = 0;
+        self.bus.stalls = 0;
 
         Ok(())
     }
 
     pub fn tick(&mut self) -> Result<()> {
-        if self.stalls > 0 {
-            self.stalls -= 1;
+        self.bus.cycles = self.bus.cycles.wrapping_add(1);
+
+        if self.bus.stalls > 0 {
+            self.bus.stalls -= 1;
 
             return Ok(());
         }
