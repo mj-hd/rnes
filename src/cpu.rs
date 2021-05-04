@@ -1,6 +1,9 @@
+use std::fmt::{self, Debug, Display, Formatter};
+
 use anyhow::Result;
 use bitfield::bitfield;
 use bitmatch::bitmatch;
+use log::trace;
 
 use crate::bus::CpuBus;
 
@@ -22,6 +25,49 @@ enum AddrMode {
     Indirect,
 }
 
+impl Display for AddrMode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            &AddrMode::ZeroPage => {
+                write!(f, "d")
+            }
+            &AddrMode::Absolute => {
+                write!(f, "a")
+            }
+            &AddrMode::Relative => {
+                write!(f, "*+d")
+            }
+            &AddrMode::Indirect => {
+                write!(f, "(a)")
+            }
+            &AddrMode::Immediate => {
+                write!(f, "#i")
+            }
+            &AddrMode::Accumulator => {
+                write!(f, "A")
+            }
+            &AddrMode::ZeroPageIndexedX => {
+                write!(f, "d+x")
+            }
+            &AddrMode::ZeroPageIndexedY => {
+                write!(f, "d+y")
+            }
+            &AddrMode::AbsoluteIndexedX => {
+                write!(f, "a+x")
+            }
+            &AddrMode::AbsoluteIndexedY => {
+                write!(f, "a+y")
+            }
+            &AddrMode::IndexedIndirectX => {
+                write!(f, "(d+x)")
+            }
+            &AddrMode::IndirectIndexedY => {
+                write!(f, "(d)+x")
+            }
+        }
+    }
+}
+
 bitfield! {
     struct P(u8);
     n, set_n: 7;
@@ -31,6 +77,31 @@ bitfield! {
     i, set_i: 2;
     z, set_z: 1;
     c, set_c: 0;
+}
+
+fn cap_if(cond: bool, c: char) -> char {
+    if cond {
+        c.to_ascii_uppercase()
+    } else {
+        c.to_ascii_lowercase()
+    }
+}
+
+impl Display for P {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}{}{}{}{}{}{}{}",
+            cap_if(self.n(), 'n'),
+            cap_if(self.v(), 'v'),
+            cap_if(self.b() & 0b10 > 0, 'u'),
+            cap_if(self.b() & 0b01 > 0, 'b'),
+            cap_if(self.d(), 'd'),
+            cap_if(self.i(), 'i'),
+            cap_if(self.z(), 'z'),
+            cap_if(self.c(), 'c')
+        )
+    }
 }
 
 pub struct Cpu {
@@ -46,6 +117,16 @@ pub struct Cpu {
     bus: CpuBus,
 }
 
+impl Debug for Cpu {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "A:{:02X} X:{:02X} Y:{:02X} S:{:02X} P:{} ${:04X}",
+            self.a, self.x, self.y, self.s, self.p, self.pc
+        )
+    }
+}
+
 impl Cpu {
     pub fn new(bus: CpuBus) -> Self {
         Self {
@@ -53,7 +134,7 @@ impl Cpu {
             x: 0,
             y: 0,
             s: 0xFD,
-            p: P(0x34),
+            p: P(0x04),
             pc: 0,
             halt: false,
             bus,
@@ -65,7 +146,7 @@ impl Cpu {
         self.x = 0;
         self.y = 0;
         self.s = 0xFD;
-        self.p = P(0x34);
+        self.p = P(0x04);
         self.pc = self.bus.read_word(0xFFFC)?;
         self.bus.stalls = 0;
 
@@ -144,8 +225,10 @@ impl Cpu {
         match mode {
             // INST #i
             AddrMode::Immediate => {
+                let addr = self.pc;
                 self.pc = self.pc.wrapping_add(1);
-                Ok(self.pc)
+
+                Ok(addr)
             }
             // INST d
             AddrMode::ZeroPage => self.read_operand_addr_zero_page(0),
@@ -478,10 +561,13 @@ impl Cpu {
     }
 
     fn nop(&mut self) -> Result<()> {
+        trace!("{:?}: NOP", self);
+
         Ok(())
     }
 
     fn brk(&mut self) -> Result<()> {
+        trace!("{:?}: BRK", self);
         // TODO 割り込み
         Ok(())
     }
@@ -491,6 +577,8 @@ impl Cpu {
         self.push_16(self.pc)?;
         self.pc = addr;
 
+        trace!("{:?}: JSR {}", self, mode);
+
         Ok(())
     }
 
@@ -498,11 +586,15 @@ impl Cpu {
         self.p = P(self.pop_8()?);
         self.pc = self.pop_16()?;
 
+        trace!("{:?}: RTI", self);
+
         Ok(())
     }
 
     fn rts(&mut self) -> Result<()> {
         self.pc = self.pop_16()?;
+
+        trace!("{:?}: RTS", self);
 
         Ok(())
     }
@@ -513,6 +605,8 @@ impl Cpu {
 
         self.y = result;
         self.set_zn_by(result);
+
+        trace!("{:?}: LDY {}", self, mode);
 
         Ok(())
     }
@@ -529,10 +623,14 @@ impl Cpu {
     }
 
     fn cpy(&mut self, mode: AddrMode) -> Result<()> {
+        trace!("{:?}: CPY {}", self, mode);
+
         self._cmp(mode, self.y)
     }
 
     fn cpx(&mut self, mode: AddrMode) -> Result<()> {
+        trace!("{:?}: CPX {}", self, mode);
+
         self._cmp(mode, self.x)
     }
 
@@ -546,6 +644,8 @@ impl Cpu {
         self.set_n_by(right);
         self.p.set_v(right >> 6 > 0);
 
+        trace!("{:?}: BIT {}", self, mode);
+
         Ok(())
     }
 
@@ -555,11 +655,15 @@ impl Cpu {
 
         self.bus.write(addr, data)?;
 
+        trace!("{:?}: STY {}", self, mode);
+
         Ok(())
     }
 
     fn php(&mut self) -> Result<()> {
         self.push_8(self.p.0)?;
+
+        trace!("{:?}: PHP", self);
 
         Ok(())
     }
@@ -567,11 +671,15 @@ impl Cpu {
     fn plp(&mut self) -> Result<()> {
         self.p = P(self.pop_8()?);
 
+        trace!("{:?}: PLP", self);
+
         Ok(())
     }
 
     fn pha(&mut self) -> Result<()> {
         self.push_8(self.a)?;
+
+        trace!("{:?}: PHA", self);
 
         Ok(())
     }
@@ -581,6 +689,8 @@ impl Cpu {
 
         self.set_zn_by(self.a);
 
+        trace!("{:?}: PLA", self);
+
         Ok(())
     }
 
@@ -588,6 +698,8 @@ impl Cpu {
         self.y = self.y.wrapping_sub(1);
 
         self.set_zn_by(self.y);
+
+        trace!("{:?}: DEY", self);
 
         Ok(())
     }
@@ -597,6 +709,8 @@ impl Cpu {
 
         self.set_zn_by(self.y);
 
+        trace!("{:?}: TAY", self);
+
         Ok(())
     }
 
@@ -605,6 +719,8 @@ impl Cpu {
 
         self.set_zn_by(self.y);
 
+        trace!("{:?}: INY", self);
+
         Ok(())
     }
 
@@ -612,6 +728,8 @@ impl Cpu {
         self.x = self.x.wrapping_add(1);
 
         self.set_zn_by(self.x);
+
+        trace!("{:?}: INX", self);
 
         Ok(())
     }
@@ -623,6 +741,8 @@ impl Cpu {
     }
 
     fn jmp(&mut self, mode: AddrMode) -> Result<()> {
+        trace!("{:?}: JMP {}", self, mode);
+
         let addr = self.read_operand_addr(mode)?;
 
         self._jmp(addr)
@@ -635,6 +755,8 @@ impl Cpu {
             self._jmp(addr)?;
         }
 
+        trace!("{:?}: BPL {}", self, mode);
+
         Ok(())
     }
 
@@ -644,6 +766,8 @@ impl Cpu {
         if self.p.n() {
             self._jmp(addr)?;
         }
+
+        trace!("{:?}: BMI {}", self, mode);
 
         Ok(())
     }
@@ -655,6 +779,8 @@ impl Cpu {
             self._jmp(addr)?;
         }
 
+        trace!("{:?}: BVC {}", self, mode);
+
         Ok(())
     }
 
@@ -664,6 +790,8 @@ impl Cpu {
         if self.p.v() {
             self._jmp(addr)?;
         }
+
+        trace!("{:?}: BVS {}", self, mode);
 
         Ok(())
     }
@@ -675,6 +803,8 @@ impl Cpu {
             self._jmp(addr)?;
         }
 
+        trace!("{:?}: BCC {}", self, mode);
+
         Ok(())
     }
 
@@ -684,6 +814,8 @@ impl Cpu {
         if self.p.c() {
             self._jmp(addr)?;
         }
+
+        trace!("{:?}: BCS {}", self, mode);
 
         Ok(())
     }
@@ -695,6 +827,8 @@ impl Cpu {
             self._jmp(addr)?;
         }
 
+        trace!("{:?}: BNE {}", self, mode);
+
         Ok(())
     }
 
@@ -705,11 +839,15 @@ impl Cpu {
             self._jmp(addr)?;
         }
 
+        trace!("{:?}: BEQ {}", self, mode);
+
         Ok(())
     }
 
     fn clc(&mut self) -> Result<()> {
         self.p.set_c(false);
+
+        trace!("{:?}: CLC", self);
 
         Ok(())
     }
@@ -717,11 +855,15 @@ impl Cpu {
     fn sec(&mut self) -> Result<()> {
         self.p.set_c(true);
 
+        trace!("{:?}: SEC", self);
+
         Ok(())
     }
 
     fn cli(&mut self) -> Result<()> {
         self.p.set_i(false);
+
+        trace!("{:?}: CLI", self);
 
         Ok(())
     }
@@ -729,11 +871,15 @@ impl Cpu {
     fn sei(&mut self) -> Result<()> {
         self.p.set_i(false);
 
+        trace!("{:?}: SEI", self);
+
         Ok(())
     }
 
     fn clv(&mut self) -> Result<()> {
         self.p.set_v(false);
+
+        trace!("{:?}: CLV", self);
 
         Ok(())
     }
@@ -741,11 +887,15 @@ impl Cpu {
     fn cld(&mut self) -> Result<()> {
         self.p.set_d(false);
 
+        trace!("{:?}: CLD", self);
+
         Ok(())
     }
 
     fn sed(&mut self) -> Result<()> {
         self.p.set_d(true);
+
+        trace!("{:?}: SED", self);
 
         Ok(())
     }
@@ -754,6 +904,8 @@ impl Cpu {
         self.a = self.y;
 
         self.set_zn_by(self.a);
+
+        trace!("{:?}: TYA", self);
 
         Ok(())
     }
@@ -778,14 +930,20 @@ impl Cpu {
     }
 
     fn ora(&mut self, mode: AddrMode) -> Result<()> {
+        trace!("{:?}: ORA {}", self, mode);
+
         self._alu(mode, |left, right| left | right)
     }
 
     fn and(&mut self, mode: AddrMode) -> Result<()> {
+        trace!("{:?}: AND {}", self, mode);
+
         self._alu(mode, |left, right| left & right)
     }
 
     fn eor(&mut self, mode: AddrMode) -> Result<()> {
+        trace!("{:?}: EOR {}", self, mode);
+
         self._alu(mode, |left, right| left ^ right)
     }
 
@@ -805,6 +963,8 @@ impl Cpu {
         self.p.set_v(v1 | v2);
         self.p.set_c(c1 | c2);
 
+        trace!("{:?}: ADC {}", self, mode);
+
         Ok(())
     }
 
@@ -813,6 +973,8 @@ impl Cpu {
         let addr = self.read_operand_addr(mode)?;
 
         self.bus.write(addr, data)?;
+
+        trace!("{:?}: STA {}", self, mode);
 
         Ok(())
     }
@@ -824,6 +986,8 @@ impl Cpu {
         self.a = data;
 
         self.set_zn_by(self.a);
+
+        trace!("{:?}: LDA {}", self, mode);
 
         Ok(())
     }
@@ -837,6 +1001,8 @@ impl Cpu {
 
         self.set_zn_by(result);
         self.p.set_c(c);
+
+        trace!("{:?}: CMP {}", self, mode);
 
         Ok(())
     }
@@ -857,6 +1023,8 @@ impl Cpu {
 
         self.p.set_v(v1 | v2);
         self.p.set_c(c1 | c2);
+
+        trace!("{:?}: SBC {}", self, mode);
 
         Ok(())
     }
@@ -892,18 +1060,26 @@ impl Cpu {
     }
 
     fn asl(&mut self, mode: AddrMode) -> Result<()> {
+        trace!("{:?}: ASL {}", self, mode);
+
         self._shift(mode, |data| data << 1)
     }
 
     fn rol(&mut self, mode: AddrMode) -> Result<()> {
+        trace!("{:?}: ROL {}", self, mode);
+
         self._shift(mode, |data| data.rotate_left(1))
     }
 
     fn lsr(&mut self, mode: AddrMode) -> Result<()> {
+        trace!("{:?}: LSR {}", self, mode);
+
         self._shift(mode, |data| data >> 1)
     }
 
     fn ror(&mut self, mode: AddrMode) -> Result<()> {
+        trace!("{:?}: ROR {}", self, mode);
+
         self._shift(mode, |data| data.rotate_right(1))
     }
 
@@ -912,6 +1088,8 @@ impl Cpu {
         let addr = self.read_operand_addr(mode)?;
 
         self.bus.write(addr, data)?;
+
+        trace!("{:?}: STX {}", self, mode);
 
         Ok(())
     }
@@ -922,6 +1100,8 @@ impl Cpu {
 
         self.x = result;
         self.set_zn_by(result);
+
+        trace!("{:?}: LDX {}", self, mode);
 
         Ok(())
     }
@@ -936,6 +1116,8 @@ impl Cpu {
 
         self.set_zn_by(data);
 
+        trace!("{:?}: DEC {}", self, mode);
+
         Ok(())
     }
 
@@ -949,6 +1131,8 @@ impl Cpu {
 
         self.set_zn_by(data);
 
+        trace!("{:?}: INC {}", self, mode);
+
         Ok(())
     }
 
@@ -956,6 +1140,8 @@ impl Cpu {
         self.a = self.x;
 
         self.set_zn_by(self.a);
+
+        trace!("{:?}: TXA", self);
 
         Ok(())
     }
@@ -965,6 +1151,8 @@ impl Cpu {
 
         self.set_zn_by(self.x);
 
+        trace!("{:?}: TAX", self);
+
         Ok(())
     }
 
@@ -972,6 +1160,8 @@ impl Cpu {
         self.x = self.x.wrapping_sub(1);
 
         self.set_zn_by(self.x);
+
+        trace!("{:?}: DEX", self);
 
         Ok(())
     }
@@ -981,6 +1171,8 @@ impl Cpu {
 
         self.set_zn_by(self.s);
 
+        trace!("{:?}: TXS", self);
+
         Ok(())
     }
 
@@ -988,6 +1180,8 @@ impl Cpu {
         self.x = self.s;
 
         self.set_zn_by(self.x);
+
+        trace!("{:?}: TSX", self);
 
         Ok(())
     }

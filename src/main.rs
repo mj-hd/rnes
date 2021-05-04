@@ -23,6 +23,8 @@ enum UiThreadEvent {
 }
 
 fn main() {
+    env_logger::init();
+
     let event_loop = EventLoop::new();
     let mut input = WinitInputHelper::new();
 
@@ -49,6 +51,8 @@ fn main() {
     {
         thread::spawn(move || {
             let mut nes = Nes::new(rom).unwrap();
+
+            nes.reset().unwrap();
 
             loop {
                 let time = Instant::now();

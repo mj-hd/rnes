@@ -33,6 +33,12 @@ impl Mmc0 {
 
 impl Mmc for Mmc0 {
     fn read_cpu(&self, addr: u16) -> Result<u8> {
+        let addr = if self.rom.prg_size <= 0x4000 && addr >= 0x8000 {
+            addr - 0x4000
+        } else {
+            addr
+        };
+
         match addr {
             0x6000..=0x7FFF => Ok(self.prg_ram[(addr - 0x6000) as usize]),
             0x8000..=0xFFFF => Ok(self.rom.prg()[(addr - 0x8000) as usize]),

@@ -40,6 +40,12 @@ impl Nes {
         Ok(Self { cpu, ppu, apu })
     }
 
+    pub fn reset(&mut self) -> Result<()> {
+        self.cpu.borrow_mut().reset()?;
+
+        Ok(())
+    }
+
     pub fn tick(&mut self) -> Result<()> {
         self.cpu.borrow_mut().tick()?;
         self.ppu.borrow_mut().tick()?;
