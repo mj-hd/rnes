@@ -960,6 +960,7 @@ impl Cpu {
 
         self.a = result2;
 
+        self.set_zn_by(result2);
         self.p.set_v(v1 | v2);
         self.p.set_c(c1 | c2);
 
@@ -1021,6 +1022,7 @@ impl Cpu {
 
         self.a = result2;
 
+        self.set_zn_by(result2);
         self.p.set_v(v1 | v2);
         self.p.set_c(c1 | c2);
 

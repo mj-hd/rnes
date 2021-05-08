@@ -113,13 +113,15 @@ bitfield! {
 
 bitfield! {
     struct Status(u8);
-    irq_vblank, _: 7;
+    irq_vblank, set_irq_vblank: 7;
     oam_0_hit, _: 6;
     oam_overflow, _: 5;
 }
 
 bitfield! {
+    #[derive(Clone, Copy)]
     struct Attribute(u8);
+    impl Debug;
     u8, palette, _: 1, 0, 4;
 }
 
@@ -191,6 +193,7 @@ impl Ppu {
 
         if self.lines >= HEIGHT {
             self.lines = 0;
+            self.status.set_irq_vblank(false);
         }
 
         if self.lines < VISIBLE_HEIGHT {
@@ -218,6 +221,7 @@ impl Ppu {
         if self.lines >= VISIBLE_HEIGHT {
             self.y = 0;
             self.mode = Mode::VBlank;
+            self.status.set_irq_vblank(true);
         }
 
         match self.mode {
@@ -274,7 +278,7 @@ impl Ppu {
     fn bg_attr(&self, tile_x: u8, tile_y: u8) -> Result<Attribute> {
         let attr_x = tile_x / 2;
         let attr_y = tile_y / 2;
-        let base_addr = self.name_table_addr() + 0x0340;
+        let base_addr = self.name_table_addr() + 0x03C0;
         let index_addr = attr_x as u16 + (attr_y as u16) * 16;
         let addr = base_addr.wrapping_add(index_addr as u16);
 
@@ -319,14 +323,14 @@ impl Ppu {
 
     fn bg_palettes(&self, tile_x: u8, tile_y: u8, attr: Attribute) -> Result<[Color; 4]> {
         let base_addr = 0x3F00u16;
-        let palette_index = attr.palette((3 - tile_x % 2 - tile_y % 2 * 2) as usize);
+        let palette_index = attr.palette((3 - tile_x % 2 - (tile_y % 2) * 2) as usize);
         let index_addr = palette_index * 0x04;
         let addr = base_addr + index_addr as u16;
 
         let mut palettes: [Color; 4] = [0; 4];
 
         for i in 0..4 {
-            palettes[i] = self.bus.read((addr + i as u16) as u16)? as usize;
+            palettes[i] = self.bus.read(addr + i as u16)? as usize;
         }
 
         Ok(palettes)
