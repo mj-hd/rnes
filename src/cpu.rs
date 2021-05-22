@@ -1,4 +1,4 @@
-use std::fmt::{self, Debug, Display, Formatter};
+use std::fmt::{self, Debug, Display, Formatter, UpperHex};
 
 use anyhow::Result;
 use bitfield::bitfield;
@@ -25,44 +25,49 @@ enum AddrMode {
     Indirect,
 }
 
-impl Display for AddrMode {
+struct ActualAddr<Addr>(AddrMode, Addr);
+
+impl<Addr> Display for ActualAddr<Addr>
+where
+    Addr: UpperHex,
+{
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            &AddrMode::ZeroPage => {
-                write!(f, "d")
+        match self.0 {
+            AddrMode::ZeroPage => {
+                write!(f, "${:02X}", self.1)
             }
-            &AddrMode::Absolute => {
-                write!(f, "a")
+            AddrMode::Absolute => {
+                write!(f, "${:04X}", self.1)
             }
-            &AddrMode::Relative => {
-                write!(f, "*+d")
+            AddrMode::Relative => {
+                write!(f, "(${:02X})", self.1)
             }
-            &AddrMode::Indirect => {
-                write!(f, "(a)")
+            AddrMode::Indirect => {
+                write!(f, "(${:04X})", self.1)
             }
-            &AddrMode::Immediate => {
-                write!(f, "#i")
+            AddrMode::Immediate => {
+                write!(f, "#${:02X}", self.1)
             }
-            &AddrMode::Accumulator => {
+            AddrMode::Accumulator => {
                 write!(f, "A")
             }
-            &AddrMode::ZeroPageIndexedX => {
-                write!(f, "d+x")
+            AddrMode::ZeroPageIndexedX => {
+                write!(f, "${:02X}, X", self.1)
             }
-            &AddrMode::ZeroPageIndexedY => {
-                write!(f, "d+y")
+            AddrMode::ZeroPageIndexedY => {
+                write!(f, "${:02X}, Y", self.1)
             }
-            &AddrMode::AbsoluteIndexedX => {
-                write!(f, "a+x")
+            AddrMode::AbsoluteIndexedX => {
+                write!(f, "${:04X}, X", self.1)
             }
-            &AddrMode::AbsoluteIndexedY => {
-                write!(f, "a+y")
+            AddrMode::AbsoluteIndexedY => {
+                write!(f, "${:04X}, Y", self.1)
             }
-            &AddrMode::IndexedIndirectX => {
-                write!(f, "(d+x)")
+            AddrMode::IndexedIndirectX => {
+                write!(f, "(${:02X}, X)", self.1)
             }
-            &AddrMode::IndirectIndexedY => {
-                write!(f, "(d)+x")
+            AddrMode::IndirectIndexedY => {
+                write!(f, "(${:02X})+Y", self.1)
             }
         }
     }
@@ -121,8 +126,8 @@ impl Debug for Cpu {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "A:{:02X} X:{:02X} Y:{:02X} S:{:02X} P:{} ${:04X}",
-            self.a, self.x, self.y, self.s, self.p, self.pc
+            "A:{:02X} X:{:02X} Y:{:02X} P:{:02X} SP:{:02X} ${:04X}",
+            self.a, self.x, self.y, self.p.0, self.s, self.pc
         )
     }
 }
@@ -134,7 +139,7 @@ impl Cpu {
             x: 0,
             y: 0,
             s: 0xFD,
-            p: P(0x04),
+            p: P(0x24),
             pc: 0,
             halt: false,
             bus,
@@ -146,7 +151,7 @@ impl Cpu {
         self.x = 0;
         self.y = 0;
         self.s = 0xFD;
-        self.p = P(0x04);
+        self.p = P(0x24);
         self.pc = self.bus.read_word(0xFFFC)?;
         self.bus.stalls = 0;
 
@@ -215,10 +220,21 @@ impl Cpu {
         Ok(addr)
     }
 
-    fn read_operand_addr_indirect(&self, hop_addr: u16) -> Result<u16> {
-        let addr = self.bus.read_word(hop_addr)?;
+    // TODO BUSに移動する
+    fn read_operand_addr_indirect_page(&self, hop_addr: u16) -> Result<u16> {
+        let low = self.bus.read(hop_addr)?;
+        let high = self
+            .bus
+            .read((hop_addr & 0xFF00) | (hop_addr.wrapping_add(1) & 0x00FF))?;
 
-        Ok(addr)
+        Ok(((high as u16) << 8) | (low as u16))
+    }
+
+    fn read_operand_addr_indirect_zero_page(&self, hop_addr: u16) -> Result<u16> {
+        let low = self.bus.read(hop_addr % 0x100)?;
+        let high = self.bus.read(hop_addr.wrapping_add(1) % 0x100)?;
+
+        Ok(((high as u16) << 8) | (low as u16))
     }
 
     fn read_operand_addr(&mut self, mode: AddrMode) -> Result<u16> {
@@ -246,7 +262,7 @@ impl Cpu {
             // INST (a)
             AddrMode::Indirect => {
                 let hop_addr = self.read_operand_addr_absolute(0)?;
-                self.read_operand_addr_indirect(hop_addr)
+                self.read_operand_addr_indirect_page(hop_addr)
             }
             // INST A
             AddrMode::Accumulator => Ok(0),
@@ -261,12 +277,12 @@ impl Cpu {
             // INST (d,x)
             AddrMode::IndexedIndirectX => {
                 let hop_addr = self.read_operand_addr_zero_page(self.x)?;
-                self.read_operand_addr_indirect(hop_addr)
+                self.read_operand_addr_indirect_zero_page(hop_addr)
             }
             // INST (d),y
             AddrMode::IndirectIndexedY => {
                 let hop_addr = self.read_operand_addr_zero_page(0)?;
-                let addr = self.read_operand_addr_indirect(hop_addr)?;
+                let addr = self.read_operand_addr_indirect_zero_page(hop_addr)?;
 
                 Ok(addr.wrapping_add(self.y as u16))
             }
@@ -301,7 +317,7 @@ impl Cpu {
             // RTS
             "01100000" => self.rts(),
             // NOP #i
-            "10000000" => self.nop(),
+            "10000000" => self.nop(1),
             // LDY #i
             "10100000" => self.ldy(AddrMode::Immediate),
             // CPY #i
@@ -311,7 +327,7 @@ impl Cpu {
 
             // +04
             // NOP d
-            "hhh00100" if h == 0b000 || h == 0b010 || h == 0b011 => self.nop(),
+            "hhh00100" if h == 0b000 || h == 0b010 || h == 0b011 => self.nop(1),
             // BIT d, BIT a
             "0010m100" => self.bit(self.addr_mode_from_ctrl_mode(m)),
 
@@ -345,7 +361,7 @@ impl Cpu {
 
             // +0C
             // NOP a
-            "00001100" => self.nop(),
+            "00001100" => self.nop(2),
             // JMP a
             "01001100" => self.jmp(AddrMode::Absolute),
             // JMP (a)
@@ -371,7 +387,7 @@ impl Cpu {
 
             // +14
             // NOP d,x
-            "hhh10100" if h != 0b100 && h != 0b101 => self.nop(),
+            "hhh10100" if h != 0b100 && h != 0b101 => self.nop(1),
 
             // +18
             // CLC
@@ -393,7 +409,7 @@ impl Cpu {
 
             // +1C
             // NOP a,x
-            "hhh11100" if h != 0b100 && h != 0b101 => self.nop(),
+            "hhh11100" if h != 0b100 && h != 0b101 => self.nop(2),
             // SHY a,x
             "10011100" => self.shy(AddrMode::AbsoluteIndexedX),
 
@@ -417,7 +433,7 @@ impl Cpu {
 
             // +09
             // NOP #i
-            "10001001" => self.nop(),
+            "10001001" => self.nop(1),
 
             // RMW
             // +02
@@ -426,7 +442,7 @@ impl Cpu {
             // STP
             "hhh00010" if h <= 0b011 => self.stp(),
             // NOP
-            "hhh00010" if h == 0b100 || h == 0b110 || h == 0b111 => self.nop(),
+            "hhh00010" if h == 0b100 || h == 0b110 || h == 0b111 => self.nop(0),
 
             // ASL
             "000mm110" => self.asl(self.addr_mode_from_rmw_mode_x(m)),
@@ -463,7 +479,7 @@ impl Cpu {
             // DEX
             "11001010" => self.dex(),
             // NOP
-            "11101010" => self.nop(),
+            "11101010" => self.nop(0),
 
             // +12
             // STP
@@ -471,7 +487,7 @@ impl Cpu {
 
             // +1A
             // NOP
-            "hhh11010" if h != 0b100 && h != 0b101 => self.nop(),
+            "hhh11010" if h != 0b100 && h != 0b101 => self.nop(0),
             // TXS
             "10011010" => self.txs(),
             // TSX
@@ -481,8 +497,18 @@ impl Cpu {
             // SHX a,y
             "10011110" => self.shx(AddrMode::AbsoluteIndexedY),
 
+            // unoficial
+            // LAX
+            "101mmm11" => self.lax(self.addr_mode_from_ax_mode(m)),
+
+            // SAX
+            "100mmm11" => self.sax(self.addr_mode_from_ax_mode(m)),
+
+            // SBC #i
+            "11101011" => self.sbc(AddrMode::Immediate),
+
             _ => {
-                dbg!("unknown opecode {:#02X}", opecode);
+                dbg!("unknown opecode", opecode);
                 Ok(())
             }
         }
@@ -512,6 +538,20 @@ impl Cpu {
         }
     }
 
+    fn addr_mode_from_ax_mode(&self, mode: u8) -> AddrMode {
+        match mode {
+            0b000 => AddrMode::IndexedIndirectX,
+            0b001 => AddrMode::ZeroPage,
+            0b010 => AddrMode::Immediate,
+            0b011 => AddrMode::Absolute,
+            0b100 => AddrMode::IndirectIndexedY,
+            0b101 => AddrMode::ZeroPageIndexedY,
+            0b110 => AddrMode::AbsoluteIndexedY,
+            0b111 => AddrMode::AbsoluteIndexedY,
+            _ => unimplemented!("invalid alu mode {:#02X}", mode),
+        }
+    }
+
     fn addr_mode_from_rmw_mode_x(&self, mode: u8) -> AddrMode {
         match mode {
             0b00 => AddrMode::ZeroPage,
@@ -533,35 +573,39 @@ impl Cpu {
     }
 
     fn push_8(&mut self, data: u8) -> Result<()> {
-        self.s = self.s.wrapping_sub(1);
         self.bus.write(STACK_BASE + self.s as u16, data)?;
+        self.s = self.s.wrapping_sub(1);
 
         Ok(())
     }
 
     fn pop_8(&mut self) -> Result<u8> {
-        let result = self.bus.read(STACK_BASE + self.s as u16)?;
         self.s = self.s.wrapping_add(1);
+        let result = self.bus.read(STACK_BASE + self.s as u16)?;
 
         Ok(result)
     }
 
     fn push_16(&mut self, data: u16) -> Result<()> {
-        self.s = self.s.wrapping_sub(2);
+        self.s = self.s.wrapping_sub(1);
         self.bus.write_word(STACK_BASE + self.s as u16, data)?;
+        self.s = self.s.wrapping_sub(1);
 
         Ok(())
     }
 
     fn pop_16(&mut self) -> Result<u16> {
+        self.s = self.s.wrapping_add(1);
         let result = self.bus.read_word(STACK_BASE + self.s as u16)?;
-        self.s = self.s.wrapping_add(2);
+        self.s = self.s.wrapping_add(1);
 
         Ok(result)
     }
 
-    fn nop(&mut self) -> Result<()> {
+    fn nop(&mut self, padding: u16) -> Result<()> {
         trace!("{:?}: NOP", self);
+
+        self.pc = self.pc.wrapping_add(padding);
 
         Ok(())
     }
@@ -569,21 +613,28 @@ impl Cpu {
     fn brk(&mut self) -> Result<()> {
         trace!("{:?}: BRK", self);
         // TODO 割り込み
+        // TODO Bフラグの更新
         Ok(())
     }
 
     fn jsr(&mut self, mode: AddrMode) -> Result<()> {
-        let addr = self.read_operand_addr(mode)?;
-        self.push_16(self.pc)?;
-        self.pc = addr;
+        let jmp_addr = self.read_operand_addr(mode)?;
+        let addr = self.pc - 1;
 
-        trace!("{:?}: JSR {}", self, mode);
+        self.push_16(addr)?;
+        self.pc = jmp_addr;
+
+        trace!("{:?}: JSR {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
 
     fn rti(&mut self) -> Result<()> {
+        let b = self.p.b();
+
         self.p = P(self.pop_8()?);
+        self.p.set_b(b);
+
         self.pc = self.pop_16()?;
 
         trace!("{:?}: RTI", self);
@@ -592,7 +643,7 @@ impl Cpu {
     }
 
     fn rts(&mut self) -> Result<()> {
-        self.pc = self.pop_16()?;
+        self.pc = self.pop_16()? + 1;
 
         trace!("{:?}: RTS", self);
 
@@ -606,32 +657,36 @@ impl Cpu {
         self.y = result;
         self.set_zn_by(result);
 
-        trace!("{:?}: LDY {}", self, mode);
+        trace!("{:?}: LDY {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
 
-    fn _cmp(&mut self, mode: AddrMode, left: u8) -> Result<()> {
+    fn _cmp(&mut self, mode: AddrMode, left: u8) -> Result<u16> {
         let addr = self.read_operand_addr(mode)?;
         let right = self.bus.read(addr)?;
         let (result, c) = left.overflowing_sub(right);
 
         self.set_zn_by(result);
-        self.p.set_c(c);
+        self.p.set_c(!c);
+
+        Ok(addr)
+    }
+
+    fn cpy(&mut self, mode: AddrMode) -> Result<()> {
+        let addr = self._cmp(mode, self.y)?;
+
+        trace!("{:?}: CPY {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
 
-    fn cpy(&mut self, mode: AddrMode) -> Result<()> {
-        trace!("{:?}: CPY {}", self, mode);
-
-        self._cmp(mode, self.y)
-    }
-
     fn cpx(&mut self, mode: AddrMode) -> Result<()> {
-        trace!("{:?}: CPX {}", self, mode);
+        let addr = self._cmp(mode, self.x)?;
 
-        self._cmp(mode, self.x)
+        trace!("{:?}: CPX {}", self, ActualAddr(mode, addr));
+
+        Ok(())
     }
 
     fn bit(&mut self, mode: AddrMode) -> Result<()> {
@@ -642,9 +697,14 @@ impl Cpu {
 
         self.set_z_by(result);
         self.set_n_by(right);
-        self.p.set_v(right >> 6 > 0);
+        self.p.set_v(right & 0b01000000 > 0);
 
-        trace!("{:?}: BIT {}", self, mode);
+        trace!(
+            "{:?}: BIT {} = #{:02X}",
+            self,
+            ActualAddr(mode, addr),
+            right
+        );
 
         Ok(())
     }
@@ -655,13 +715,13 @@ impl Cpu {
 
         self.bus.write(addr, data)?;
 
-        trace!("{:?}: STY {}", self, mode);
+        trace!("{:?}: STY {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
 
     fn php(&mut self) -> Result<()> {
-        self.push_8(self.p.0)?;
+        self.push_8(self.p.0 | 0b00110000)?;
 
         trace!("{:?}: PHP", self);
 
@@ -669,7 +729,10 @@ impl Cpu {
     }
 
     fn plp(&mut self) -> Result<()> {
+        let b = self.p.b();
+
         self.p = P(self.pop_8()?);
+        self.p.set_b(b);
 
         trace!("{:?}: PLP", self);
 
@@ -741,9 +804,9 @@ impl Cpu {
     }
 
     fn jmp(&mut self, mode: AddrMode) -> Result<()> {
-        trace!("{:?}: JMP {}", self, mode);
-
         let addr = self.read_operand_addr(mode)?;
+
+        trace!("{:?}: JMP {}", self, ActualAddr(mode, addr));
 
         self._jmp(addr)
     }
@@ -755,7 +818,7 @@ impl Cpu {
             self._jmp(addr)?;
         }
 
-        trace!("{:?}: BPL {}", self, mode);
+        trace!("{:?}: BPL {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
@@ -767,7 +830,7 @@ impl Cpu {
             self._jmp(addr)?;
         }
 
-        trace!("{:?}: BMI {}", self, mode);
+        trace!("{:?}: BMI {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
@@ -779,7 +842,7 @@ impl Cpu {
             self._jmp(addr)?;
         }
 
-        trace!("{:?}: BVC {}", self, mode);
+        trace!("{:?}: BVC {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
@@ -791,7 +854,7 @@ impl Cpu {
             self._jmp(addr)?;
         }
 
-        trace!("{:?}: BVS {}", self, mode);
+        trace!("{:?}: BVS {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
@@ -803,7 +866,7 @@ impl Cpu {
             self._jmp(addr)?;
         }
 
-        trace!("{:?}: BCC {}", self, mode);
+        trace!("{:?}: BCC {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
@@ -815,7 +878,7 @@ impl Cpu {
             self._jmp(addr)?;
         }
 
-        trace!("{:?}: BCS {}", self, mode);
+        trace!("{:?}: BCS {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
@@ -827,7 +890,7 @@ impl Cpu {
             self._jmp(addr)?;
         }
 
-        trace!("{:?}: BNE {}", self, mode);
+        trace!("{:?}: BNE {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
@@ -839,7 +902,7 @@ impl Cpu {
             self._jmp(addr)?;
         }
 
-        trace!("{:?}: BEQ {}", self, mode);
+        trace!("{:?}: BEQ {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
@@ -869,7 +932,7 @@ impl Cpu {
     }
 
     fn sei(&mut self) -> Result<()> {
-        self.p.set_i(false);
+        self.p.set_i(true);
 
         trace!("{:?}: SEI", self);
 
@@ -914,7 +977,7 @@ impl Cpu {
         unimplemented!("SHY");
     }
 
-    fn _alu<Apply>(&mut self, mode: AddrMode, apply: Apply) -> Result<()>
+    fn _alu<Apply>(&mut self, mode: AddrMode, apply: Apply) -> Result<u16>
     where
         Apply: Fn(u8, u8) -> u8,
     {
@@ -926,25 +989,31 @@ impl Cpu {
 
         self.set_zn_by(self.a);
 
-        Ok(())
+        Ok(addr)
     }
 
     fn ora(&mut self, mode: AddrMode) -> Result<()> {
-        trace!("{:?}: ORA {}", self, mode);
+        let addr = self._alu(mode, |left, right| left | right)?;
 
-        self._alu(mode, |left, right| left | right)
+        trace!("{:?}: ORA {}", self, ActualAddr(mode, addr));
+
+        Ok(())
     }
 
     fn and(&mut self, mode: AddrMode) -> Result<()> {
-        trace!("{:?}: AND {}", self, mode);
+        let addr = self._alu(mode, |left, right| left & right)?;
 
-        self._alu(mode, |left, right| left & right)
+        trace!("{:?}: AND {}", self, ActualAddr(mode, addr));
+
+        Ok(())
     }
 
     fn eor(&mut self, mode: AddrMode) -> Result<()> {
-        trace!("{:?}: EOR {}", self, mode);
+        let addr = self._alu(mode, |left, right| left ^ right)?;
 
-        self._alu(mode, |left, right| left ^ right)
+        trace!("{:?}: EOR {}", self, ActualAddr(mode, addr));
+
+        Ok(())
     }
 
     fn adc(&mut self, mode: AddrMode) -> Result<()> {
@@ -964,7 +1033,7 @@ impl Cpu {
         self.p.set_v(v1 | v2);
         self.p.set_c(c1 | c2);
 
-        trace!("{:?}: ADC {}", self, mode);
+        trace!("{:?}: ADC {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
@@ -975,7 +1044,7 @@ impl Cpu {
 
         self.bus.write(addr, data)?;
 
-        trace!("{:?}: STA {}", self, mode);
+        trace!("{:?}: STA {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
@@ -988,22 +1057,41 @@ impl Cpu {
 
         self.set_zn_by(self.a);
 
-        trace!("{:?}: LDA {}", self, mode);
+        trace!("{:?}: LDA {}", self, ActualAddr(mode, addr));
+
+        Ok(())
+    }
+
+    fn lax(&mut self, mode: AddrMode) -> Result<()> {
+        let addr = self.read_operand_addr(mode)?;
+        let data = self.bus.read(addr)?;
+
+        self.a = data;
+        self.x = data;
+
+        self.set_zn_by(data);
+
+        trace!("{:?}: LAX {}", self, ActualAddr(mode, addr));
+
+        Ok(())
+    }
+
+    fn sax(&mut self, mode: AddrMode) -> Result<()> {
+        let addr = self.read_operand_addr(mode)?;
+        let data = self.a & self.x;
+
+        self.bus.write(addr, data)?;
+
+        trace!("{:?}: SAX {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
 
     fn cmp(&mut self, mode: AddrMode) -> Result<()> {
         let left = self.a;
-        let addr = self.read_operand_addr(mode)?;
-        let right = self.bus.read(addr)?;
+        let addr = self._cmp(mode, left)?;
 
-        let (result, c) = left.overflowing_sub(right);
-
-        self.set_zn_by(result);
-        self.p.set_c(c);
-
-        trace!("{:?}: CMP {}", self, mode);
+        trace!("{:?}: CMP {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
@@ -1024,9 +1112,9 @@ impl Cpu {
 
         self.set_zn_by(result2);
         self.p.set_v(v1 | v2);
-        self.p.set_c(c1 | c2);
+        self.p.set_c(!(c1 | c2));
 
-        trace!("{:?}: SBC {}", self, mode);
+        trace!("{:?}: SBC {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
@@ -1035,19 +1123,27 @@ impl Cpu {
         unimplemented!("STP");
     }
 
-    fn _shift<Apply>(&mut self, mode: AddrMode, apply: Apply) -> Result<()>
+    fn carry_shr(data: u8) -> bool {
+        data & 0b00000001 > 0
+    }
+
+    fn carry_shl(data: u8) -> bool {
+        data & 0b10000000 > 0
+    }
+
+    fn _shift<Apply>(&mut self, mode: AddrMode, apply: Apply) -> Result<u16>
     where
-        Apply: Fn(u8) -> u8,
+        Apply: Fn(u8, bool) -> (u8, bool),
     {
         let addr = self.read_operand_addr(mode)?;
 
-        let data = if mode != AddrMode::Accumulator {
+        let data = if mode == AddrMode::Accumulator {
             self.a
         } else {
             self.bus.read(addr)?
         };
 
-        let result = apply(data);
+        let (result, c) = apply(data, self.p.c());
 
         if mode == AddrMode::Accumulator {
             self.a = result;
@@ -1056,33 +1152,45 @@ impl Cpu {
         };
 
         self.set_zn_by(result);
-        self.p.set_c((data >> 7) > 0);
+        self.p.set_c(c);
+
+        Ok(addr)
+    }
+
+    fn asl(&mut self, mode: AddrMode) -> Result<()> {
+        let addr = self._shift(mode, |data, _| (data << 1, Self::carry_shl(data)))?;
+
+        trace!("{:?}: ASL {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
 
-    fn asl(&mut self, mode: AddrMode) -> Result<()> {
-        trace!("{:?}: ASL {}", self, mode);
-
-        self._shift(mode, |data| data << 1)
-    }
-
     fn rol(&mut self, mode: AddrMode) -> Result<()> {
-        trace!("{:?}: ROL {}", self, mode);
+        let addr = self._shift(mode, |data, c| {
+            ((data << 1) | c as u8, Self::carry_shl(data))
+        })?;
 
-        self._shift(mode, |data| data.rotate_left(1))
+        trace!("{:?}: ROL {}", self, ActualAddr(mode, addr));
+
+        Ok(())
     }
 
     fn lsr(&mut self, mode: AddrMode) -> Result<()> {
-        trace!("{:?}: LSR {}", self, mode);
+        let addr = self._shift(mode, |data, _| (data >> 1, Self::carry_shr(data)))?;
 
-        self._shift(mode, |data| data >> 1)
+        trace!("{:?}: LSR {}", self, ActualAddr(mode, addr));
+
+        Ok(())
     }
 
     fn ror(&mut self, mode: AddrMode) -> Result<()> {
-        trace!("{:?}: ROR {}", self, mode);
+        let addr = self._shift(mode, |data, c| {
+            ((data >> 1) | ((c as u8) << 7), Self::carry_shr(data))
+        })?;
 
-        self._shift(mode, |data| data.rotate_right(1))
+        trace!("{:?}: ROR {}", self, ActualAddr(mode, addr));
+
+        Ok(())
     }
 
     fn stx(&mut self, mode: AddrMode) -> Result<()> {
@@ -1091,7 +1199,7 @@ impl Cpu {
 
         self.bus.write(addr, data)?;
 
-        trace!("{:?}: STX {}", self, mode);
+        trace!("{:?}: STX {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
@@ -1103,7 +1211,7 @@ impl Cpu {
         self.x = result;
         self.set_zn_by(result);
 
-        trace!("{:?}: LDX {}", self, mode);
+        trace!("{:?}: LDX {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
@@ -1118,7 +1226,7 @@ impl Cpu {
 
         self.set_zn_by(data);
 
-        trace!("{:?}: DEC {}", self, mode);
+        trace!("{:?}: DEC {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
@@ -1133,7 +1241,7 @@ impl Cpu {
 
         self.set_zn_by(data);
 
-        trace!("{:?}: INC {}", self, mode);
+        trace!("{:?}: INC {}", self, ActualAddr(mode, addr));
 
         Ok(())
     }
@@ -1170,8 +1278,6 @@ impl Cpu {
 
     fn txs(&mut self) -> Result<()> {
         self.s = self.x;
-
-        self.set_zn_by(self.s);
 
         trace!("{:?}: TXS", self);
 

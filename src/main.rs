@@ -1,3 +1,4 @@
+use env_logger::{Builder, Target};
 use pixels::{Pixels, SurfaceTexture};
 use rnes::{nes::Nes, rom::Rom};
 use std::{
@@ -23,7 +24,10 @@ enum UiThreadEvent {
 }
 
 fn main() {
-    env_logger::init();
+    let mut builder = Builder::from_default_env();
+    builder.target(Target::Stdout);
+
+    builder.init();
 
     let event_loop = EventLoop::new();
     let mut input = WinitInputHelper::new();

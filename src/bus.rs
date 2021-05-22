@@ -70,7 +70,7 @@ impl CpuBus {
 
     pub fn read_word(&self, addr: u16) -> Result<u16> {
         let low = self.read(addr)?;
-        let high = self.read(addr + 1)?;
+        let high = self.read(addr.wrapping_add(1))?;
 
         Ok(((high as u16) << 8) | (low as u16))
     }
@@ -118,7 +118,7 @@ impl CpuBus {
         let high = (data >> 8) as u8;
 
         self.write(addr, low)?;
-        self.write(addr + 1, high)?;
+        self.write(addr.wrapping_add(1), high)?;
 
         Ok(())
     }
