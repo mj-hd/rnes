@@ -77,7 +77,42 @@ const COLORS: [[u8; 4]; 64] = [
     [0x11, 0x11, 0x11, 0xFF],
 ];
 
-type Color = usize;
+#[derive(Debug, Clone, Copy)]
+struct Color {
+    value: usize,
+    transparent: bool,
+}
+
+impl Default for Color {
+    fn default() -> Self {
+        Self {
+            value: 0,
+            transparent: true,
+        }
+    }
+}
+
+impl Color {
+    fn to_pixel(self) -> Rgba<u8> {
+        Rgba(COLORS[self.value])
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OamColor {
+    color: Color,
+    behind: bool,
+}
+
+impl Default for OamColor {
+    fn default() -> Self {
+        Self {
+            color: Default::default(),
+            behind: false,
+        }
+    }
+}
+
 type ColorIndex = usize;
 
 enum Mode {
@@ -86,6 +121,35 @@ enum Mode {
     OamScan,
     PostIdle,
     VBlank,
+}
+
+bitfield! {
+    #[derive(Default, Copy, Clone)]
+    struct SpriteFlags(u8);
+    impl Debug;
+    palette_num, _: 1, 0;
+    priority, _: 5;
+    x_flip, _: 6;
+    y_flip, _: 7;
+}
+
+#[derive(Debug, Default, Copy, Clone)]
+struct Oam {
+    y: u8,
+    x: u8,
+    tile_num: u8,
+    sprite_flag: SpriteFlags,
+}
+
+impl Oam {
+    fn new(data: &[u8]) -> Self {
+        Oam {
+            y: data[0],
+            x: data[3],
+            tile_num: data[1],
+            sprite_flag: SpriteFlags(data[2]),
+        }
+    }
 }
 
 bitfield! {
@@ -148,7 +212,7 @@ pub struct Ppu {
     cur_bg: [Color; 8],
 
     bg_line: [Color; WIDTH],
-    oam_line: [Color; WIDTH],
+    oam_line: [OamColor; WIDTH],
 
     pixels: ImageBuffer<Rgba<u8>, Vec<u8>>,
 }
@@ -175,9 +239,9 @@ impl Ppu {
             cycles: 0,
             lines: 0,
 
-            cur_bg: [0; 8],
-            bg_line: [0; WIDTH],
-            oam_line: [0; WIDTH],
+            cur_bg: [Default::default(); 8],
+            bg_line: [Default::default(); WIDTH],
+            oam_line: [Default::default(); WIDTH],
 
             pixels: ImageBuffer::new(VISIBLE_WIDTH as u32, VISIBLE_HEIGHT as u32),
         }
@@ -231,7 +295,7 @@ impl Ppu {
                 self.put_pixels();
             }
             Mode::OamScan => {
-                // TODO OAM
+                self.draw_sprites(self.cycles % 64)?;
             }
             _ => {}
         }
@@ -254,13 +318,56 @@ impl Ppu {
         if col == 0 {
             let attr = self.bg_attr(tile_x, tile_y)?;
             let tile = self.bg_tile(tile_x, tile_y)?;
-            let indexes = self.bg_indexes(tile, row)?;
+            let indexes = self.to_indexes(tile, row)?;
             let palettes = self.bg_palettes(tile_x, tile_y, attr)?;
 
             self.cur_bg = self.to_colors(indexes, palettes);
         }
 
         self.bg_line[cx as usize] = self.cur_bg[col as usize];
+
+        Ok(())
+    }
+
+    fn draw_sprites(&mut self, i: usize) -> Result<()> {
+        if !self.mask.oam() {
+            return Ok(());
+        }
+
+        let size = if self.ctrl.large_sprite() { 16 } else { 8 };
+
+        let oam = Oam::new(&self.bus.oam[(i * 4)..((i + 1) * 4)]);
+        let cur_y = self.lines as u16;
+        let target_y = oam.y as u16;
+
+        if cur_y < target_y + size && target_y <= cur_y {
+            self.draw_sprite(oam)?;
+        }
+
+        Ok(())
+    }
+
+    fn draw_sprite(&mut self, oam: Oam) -> Result<()> {
+        let row = self.y - oam.y;
+        let tile = oam.tile_num;
+        let indexes = self.to_indexes(tile, row)?;
+        let palette_num = oam.sprite_flag.palette_num();
+        let palettes = self.sprite_palettes(palette_num)?;
+
+        let colors = self.to_colors(indexes, palettes);
+
+        let cx = oam.x as usize;
+
+        let mut oam_colors = [Default::default(); 8];
+
+        for (i, color) in colors.iter().enumerate() {
+            oam_colors[i] = OamColor {
+                color: *color,
+                behind: oam.sprite_flag.priority(),
+            };
+        }
+
+        self.oam_line[cx..(cx + 8)].copy_from_slice(&oam_colors[..]);
 
         Ok(())
     }
@@ -297,7 +404,7 @@ impl Ppu {
 
     #[bitmatch]
     #[allow(clippy::many_single_char_names)]
-    fn bg_indexes(&self, tile: u8, row: u8) -> Result<[ColorIndex; 8]> {
+    fn to_indexes(&self, tile: u8, row: u8) -> Result<[ColorIndex; 8]> {
         let addr = row as u16 + (tile as u16) * 16;
 
         let bit = self.bus.read(addr)?;
@@ -327,17 +434,37 @@ impl Ppu {
         let index_addr = palette_index * 0x04;
         let addr = base_addr + index_addr as u16;
 
-        let mut palettes: [Color; 4] = [0; 4];
+        let mut palettes: [Color; 4] = [Default::default(); 4];
 
         for i in 0..4 {
-            palettes[i] = self.bus.read(addr + i as u16)? as usize;
+            palettes[i] = Color {
+                value: self.bus.read(addr + i as u16)? as usize,
+                transparent: i == 3,
+            };
+        }
+
+        Ok(palettes)
+    }
+
+    fn sprite_palettes(&self, palette_num: u8) -> Result<[Color; 4]> {
+        let base_addr = 0x3F11u16;
+        let index_addr = palette_num * 0x04;
+        let addr = base_addr + index_addr as u16;
+
+        let mut palettes: [Color; 4] = [Default::default(); 4];
+
+        for i in 0..4 {
+            palettes[i] = Color {
+                value: self.bus.read(addr + i as u16)? as usize,
+                transparent: i == 3,
+            };
         }
 
         Ok(palettes)
     }
 
     fn to_colors(&self, indexes: [ColorIndex; 8], palettes: [Color; 4]) -> [Color; 8] {
-        let mut colors: [Color; 8] = [0; 8];
+        let mut colors: [Color; 8] = [Default::default(); 8];
 
         for i in 0..8 {
             colors[i] = palettes[indexes[i]];
@@ -347,8 +474,20 @@ impl Ppu {
     }
 
     fn put_pixels(&mut self) {
-        let index = self.bg_line[self.x as usize] as usize;
-        let pixel = Rgba(COLORS[index]);
+        let bg_color = self.bg_line[self.x as usize];
+        let mut pixel = bg_color.to_pixel();
+
+        let sprite_color = self.oam_line[self.x as usize];
+
+        if sprite_color.behind {
+            if bg_color.transparent {
+                pixel = sprite_color.color.to_pixel();
+            }
+        } else {
+            if !sprite_color.color.transparent {
+                pixel = sprite_color.color.to_pixel();
+            }
+        }
 
         self.pixels.put_pixel(self.x as u32, self.y as u32, pixel);
     }
@@ -438,7 +577,7 @@ impl Ppu {
     }
 
     pub fn write_oam_data(&mut self, data: u8) -> Result<()> {
-        // TODO OAM定義書き込み
+        self.bus.oam[self.oam_addr as usize] = data;
 
         Ok(())
     }
