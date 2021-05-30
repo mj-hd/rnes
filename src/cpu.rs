@@ -3,7 +3,7 @@ use std::fmt::{self, Debug, Display, Formatter, UpperHex};
 use anyhow::Result;
 use bitfield::bitfield;
 use bitmatch::bitmatch;
-use log::trace;
+use log::{error, trace};
 
 use crate::bus::CpuBus;
 
@@ -74,6 +74,7 @@ where
 }
 
 bitfield! {
+    #[derive(Clone, Copy)]
     struct P(u8);
     n, set_n: 7;
     v, set_v: 6;
@@ -117,6 +118,7 @@ pub struct Cpu {
     p: P,
     pc: u16,
 
+    irq: bool,
     halt: bool,
 
     bus: CpuBus,
@@ -141,6 +143,7 @@ impl Cpu {
             s: 0xFD,
             p: P(0x24),
             pc: 0,
+            irq: false,
             halt: false,
             bus,
         }
@@ -161,13 +164,15 @@ impl Cpu {
     pub fn tick(&mut self) -> Result<()> {
         self.bus.cycles = self.bus.cycles.wrapping_add(1);
 
+        self.bus.tick()?;
+
         if self.bus.stalls > 0 {
             self.bus.stalls -= 1;
 
             return Ok(());
         }
 
-        // TODO 割り込み
+        self.interrupt()?;
 
         if self.halt {
             return Ok(());
@@ -300,6 +305,34 @@ impl Cpu {
     fn set_zn_by(&mut self, val: u8) {
         self.set_z_by(val);
         self.set_n_by(val);
+    }
+
+    fn interrupt(&mut self) -> Result<()> {
+        if self.bus.nmi() {
+            self.push_16(self.pc)?;
+            self.pc = self.bus.read_word(0xFFFA)?;
+
+            let mut p = self.p.clone();
+
+            p.set_b(0b10);
+
+            self.push_8(p.0)?;
+            self.p.set_i(true);
+        }
+
+        if !self.p.i() && self.irq {
+            self.push_16(self.pc)?;
+            self.pc = self.bus.read_word(0xFFFE)?;
+
+            let mut p = self.p.clone();
+
+            p.set_b(0b10);
+
+            self.push_8(p.0)?;
+            self.p.set_i(true);
+        }
+
+        Ok(())
     }
 
     #[bitmatch]
@@ -504,11 +537,32 @@ impl Cpu {
             // SAX
             "100mmm11" => self.sax(self.addr_mode_from_ax_mode(m)),
 
+            // DCP
+            "110mmm11" if m != 0b010 => self.dcp(self.addr_mode_from_alu_mode(m)),
+
+            // ISC
+            "111mmm11" if m != 0b010 => self.isc(self.addr_mode_from_alu_mode(m)),
+
+            // AXS #i
+            "11001011" => self.axs(AddrMode::Immediate),
+
             // SBC #i
             "11101011" => self.sbc(AddrMode::Immediate),
 
+            // SLO
+            "000mmm11" => self.slo(self.addr_mode_from_alu_mode(m)),
+
+            // RLA
+            "001mmm11" => self.rla(self.addr_mode_from_alu_mode(m)),
+
+            // SRE
+            "010mmm11" => self.sre(self.addr_mode_from_alu_mode(m)),
+
+            // RRA
+            "011mmm11" => self.rra(self.addr_mode_from_alu_mode(m)),
+
             _ => {
-                dbg!("unknown opecode", opecode);
+                error!("unknown opecode {}, {:?}", opecode, self);
                 Ok(())
             }
         }
@@ -611,9 +665,17 @@ impl Cpu {
     }
 
     fn brk(&mut self) -> Result<()> {
+        let addr = self.bus.read_word(0xFFFE)?;
+
         trace!("{:?}: BRK", self);
-        // TODO 割り込み
-        // TODO Bフラグの更新
+
+        self.push_16(self.pc + 1)?;
+        self.push_8(self.p.0 | 0b00110000)?;
+
+        self.p.set_i(true);
+
+        self.pc = addr;
+
         Ok(())
     }
 
@@ -1290,6 +1352,120 @@ impl Cpu {
         self.set_zn_by(self.x);
 
         trace!("{:?}: TSX", self);
+
+        Ok(())
+    }
+
+    fn dcp(&mut self, mode: AddrMode) -> Result<()> {
+        let pc = self.pc;
+
+        trace!("{:?}: DCP START", self);
+
+        self.dec(mode)?;
+
+        self.pc = pc;
+
+        self.cmp(mode)?;
+
+        trace!("{:?}: DCP END", self);
+
+        Ok(())
+    }
+
+    fn isc(&mut self, mode: AddrMode) -> Result<()> {
+        let pc = self.pc;
+
+        trace!("{:?}: ISC START", self);
+
+        self.inc(mode)?;
+
+        self.pc = pc;
+
+        self.sbc(mode)?;
+
+        trace!("{:?}: ISC END", self);
+
+        Ok(())
+    }
+
+    fn axs(&mut self, mode: AddrMode) -> Result<()> {
+        let addr = self.read_operand_addr(mode)?;
+        let right = self.bus.read(addr)?;
+
+        let left = self.a & self.x;
+
+        let (result, c) = left.overflowing_sub(right);
+
+        self.x = result;
+
+        self.set_zn_by(result);
+        self.p.set_c(c);
+
+        trace!("{:?}: AXS {}", self, ActualAddr(mode, addr));
+
+        Ok(())
+    }
+
+    fn slo(&mut self, mode: AddrMode) -> Result<()> {
+        let pc = self.pc;
+
+        trace!("{:?}: SLO START", self);
+
+        self.asl(mode)?;
+
+        self.pc = pc;
+
+        self.ora(mode)?;
+
+        trace!("{:?}: SLO END", self);
+
+        Ok(())
+    }
+
+    fn rla(&mut self, mode: AddrMode) -> Result<()> {
+        let pc = self.pc;
+
+        trace!("{:?}: RLA START", self);
+
+        self.rol(mode)?;
+
+        self.pc = pc;
+
+        self.and(mode)?;
+
+        trace!("{:?}: RLA END", self);
+
+        Ok(())
+    }
+
+    fn sre(&mut self, mode: AddrMode) -> Result<()> {
+        let pc = self.pc;
+
+        trace!("{:?}: SRE START", self);
+
+        self.lsr(mode)?;
+
+        self.pc = pc;
+
+        self.eor(mode)?;
+
+        trace!("{:?}: SRE END", self);
+
+        Ok(())
+    }
+
+    fn rra(&mut self, mode: AddrMode) -> Result<()> {
+        let pc = self.pc;
+
+        trace!("{:?}: RRA START", self);
+
+        self.ror(mode)?;
+
+        self.pc = pc;
+
+        self.adc(mode)?;
+
+        trace!("{:?}: RRA END", self);
 
         Ok(())
     }
