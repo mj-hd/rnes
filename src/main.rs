@@ -1,6 +1,6 @@
 use env_logger::{Builder, Target};
 use pixels::{Pixels, SurfaceTexture};
-use rnes::{nes::Nes, rom::Rom};
+use rnes::{joypad::JoypadKey, nes::Nes, rom::Rom};
 use std::{
     env,
     fs::File,
@@ -17,7 +17,10 @@ use winit::{
 };
 use winit_input_helper::WinitInputHelper;
 
-enum NesThreadEvent {}
+enum NesThreadEvent {
+    Player1Keydown(JoypadKey),
+    Player1Keyup(JoypadKey),
+}
 
 enum UiThreadEvent {
     Render(Vec<u8>),
@@ -66,7 +69,10 @@ fn main() {
                 }
 
                 match nes_receiver.try_recv() {
-                    Ok(event) => match event {},
+                    Ok(event) => match event {
+                        NesThreadEvent::Player1Keydown(key) => nes.player1_keydown(key),
+                        NesThreadEvent::Player1Keyup(key) => nes.player1_keyup(key),
+                    },
                     _ => {}
                 };
 
@@ -123,6 +129,26 @@ fn main() {
                         if input.key_pressed(VirtualKeyCode::Escape) || input.quit() {
                             *control_flow = ControlFlow::Exit;
                             return;
+                        }
+
+                        for (input_key, joypad_key) in [
+                            (VirtualKeyCode::Z, JoypadKey::A),
+                            (VirtualKeyCode::X, JoypadKey::B),
+                            (VirtualKeyCode::C, JoypadKey::Select),
+                            (VirtualKeyCode::V, JoypadKey::Start),
+                            (VirtualKeyCode::Up, JoypadKey::Up),
+                            (VirtualKeyCode::Down, JoypadKey::Down),
+                            (VirtualKeyCode::Left, JoypadKey::Left),
+                            (VirtualKeyCode::Right, JoypadKey::Right),
+                        ]
+                        .iter()
+                        {
+                            if input.key_pressed(*input_key) {
+                                nes_sender.send(NesThreadEvent::Player1Keydown(*joypad_key));
+                            }
+                            if input.key_released(*input_key) {
+                                nes_sender.send(NesThreadEvent::Player1Keyup(*joypad_key));
+                            }
                         }
 
                         if let Some(size) = input.window_resized() {

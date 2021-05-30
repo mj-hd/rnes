@@ -5,8 +5,9 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use log::debug;
 
-use crate::{apu::Apu, mmc::Mmc, ppu::Ppu};
+use crate::{apu::Apu, joypad::Joypad, mmc::Mmc, ppu::Ppu};
 
 pub enum CpuBusEvent {
     RequestDma(u16, u8),
@@ -16,6 +17,8 @@ pub struct CpuBus {
     mmc: Rc<RefCell<Box<dyn Mmc>>>,
     ppu: Rc<RefCell<Ppu>>,
     apu: Rc<RefCell<Apu>>,
+    joypad1: Rc<RefCell<Joypad>>,
+    joypad2: Rc<RefCell<Joypad>>,
 
     event: Receiver<CpuBusEvent>,
     ppu_bus_sender: Sender<PpuBusEvent>,
@@ -30,6 +33,8 @@ impl CpuBus {
         mmc: Rc<RefCell<Box<dyn Mmc>>>,
         ppu: Rc<RefCell<Ppu>>,
         apu: Rc<RefCell<Apu>>,
+        joypad1: Rc<RefCell<Joypad>>,
+        joypad2: Rc<RefCell<Joypad>>,
         event: Receiver<CpuBusEvent>,
         ppu_bus_sender: Sender<PpuBusEvent>,
     ) -> Self {
@@ -37,6 +42,8 @@ impl CpuBus {
             mmc,
             ppu,
             apu,
+            joypad1,
+            joypad2,
             ppu_bus_sender,
             event,
             cycles: 0,
@@ -49,6 +56,8 @@ impl CpuBus {
         match self.event.try_recv() {
             Ok(event) => match event {
                 CpuBusEvent::RequestDma(addr, oam_addr) => {
+                    debug!("RECEIVED REQUEST DMA: {:#04X}", oam_addr);
+
                     let mut result = Vec::with_capacity(0x0100);
 
                     for i in addr..(addr + 0x0100) {
@@ -66,6 +75,18 @@ impl CpuBus {
             },
             _ => Ok(()),
         }
+    }
+
+    pub fn nmi(&self) -> bool {
+        let mut ppu = self.ppu.borrow_mut();
+
+        if ppu.nmi {
+            ppu.nmi = false;
+
+            return true;
+        }
+
+        false
     }
 
     pub fn read_word(&self, addr: u16) -> Result<u16> {
@@ -109,6 +130,8 @@ impl CpuBus {
             0x4013 => self.apu.borrow().read_dpcm_control4(),
             0x4014 => self.ppu.borrow().read_oam_dma(),
             0x4015 => self.apu.borrow().read_voice_control(),
+            0x4016 => self.joypad1.borrow_mut().read(),
+            0x4017 => self.joypad2.borrow_mut().read(),
             addr => self.mmc.borrow().read_cpu(addr),
         }
     }
@@ -163,6 +186,8 @@ impl CpuBus {
             0x4013 => self.apu.borrow_mut().write_dpcm_control4(data),
             0x4014 => self.ppu.borrow_mut().write_oam_dma(data),
             0x4015 => self.apu.borrow_mut().write_voice_control(data),
+            0x4016 => self.joypad1.borrow_mut().write(data),
+            0x4017 => self.joypad2.borrow_mut().write(data),
             0x4020..=0xFFFF => self.mmc.borrow_mut().write_cpu(addr, data),
             _ => Ok(()),
         }
@@ -202,6 +227,8 @@ impl PpuBus {
         match self.event.try_recv() {
             Ok(event) => match event {
                 PpuBusEvent::Dma(data, oam_addr) => {
+                    debug!("RECEIVED DMA: {:#04X}", oam_addr);
+
                     for addr in (oam_addr as usize)..self.oam.len() {
                         self.oam[addr as usize] = data[addr as usize];
                     }
@@ -214,6 +241,8 @@ impl PpuBus {
     }
 
     pub fn request_dma(&mut self, cpu_addr: u16, oam_addr: u8) -> Result<()> {
+        debug!("SEND REQUEST DMA: {:#04X}", oam_addr);
+
         self.cpu_bus_sender
             .send(CpuBusEvent::RequestDma(cpu_addr, oam_addr))
             .context("failed to send cpu event")

@@ -6,6 +6,7 @@ use crate::{
     apu::Apu,
     bus::{CpuBus, CpuBusEvent, PpuBus, PpuBusEvent},
     cpu::Cpu,
+    joypad::{Joypad, JoypadKey},
     mmc::new_mmc,
     ppu::Ppu,
     rom::Rom,
@@ -15,6 +16,8 @@ pub struct Nes {
     cpu: Rc<RefCell<Cpu>>,
     ppu: Rc<RefCell<Ppu>>,
     apu: Rc<RefCell<Apu>>,
+    joypad1: Rc<RefCell<Joypad>>,
+    joypad2: Rc<RefCell<Joypad>>,
 }
 
 impl Nes {
@@ -28,22 +31,49 @@ impl Nes {
         let ppu_bus = PpuBus::new(Rc::clone(&mmc), ppu_bus_event, cpu_bus_sender);
         let ppu = Rc::new(RefCell::new(Ppu::new(ppu_bus)));
 
+        let joypad1 = Rc::new(RefCell::new(Joypad::new()));
+        let joypad2 = Rc::new(RefCell::new(Joypad::new()));
+
         let cpu_bus = CpuBus::new(
             Rc::clone(&mmc),
             Rc::clone(&ppu),
             Rc::clone(&apu),
+            Rc::clone(&joypad1),
+            Rc::clone(&joypad2),
             cpu_bus_event,
             ppu_bus_sender,
         );
         let cpu = Rc::new(RefCell::new(Cpu::new(cpu_bus)));
 
-        Ok(Self { cpu, ppu, apu })
+        Ok(Self {
+            cpu,
+            ppu,
+            apu,
+            joypad1,
+            joypad2,
+        })
     }
 
     pub fn reset(&mut self) -> Result<()> {
         self.cpu.borrow_mut().reset()?;
 
         Ok(())
+    }
+
+    pub fn player1_keydown(&mut self, key: JoypadKey) {
+        self.joypad1.borrow_mut().keydown(key);
+    }
+
+    pub fn player1_keyup(&mut self, key: JoypadKey) {
+        self.joypad1.borrow_mut().keyup(key);
+    }
+
+    pub fn player2_keydown(&mut self, key: JoypadKey) {
+        self.joypad2.borrow_mut().keydown(key);
+    }
+
+    pub fn player2_keyup(&mut self, key: JoypadKey) {
+        self.joypad2.borrow_mut().keyup(key);
     }
 
     pub fn tick(&mut self) -> Result<()> {
