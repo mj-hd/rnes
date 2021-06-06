@@ -9,7 +9,7 @@ use crate::bus::CpuBus;
 
 const STACK_BASE: u16 = 0x0100;
 
-#[derive(PartialEq, Eq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 enum AddrMode {
     ZeroPageIndexedX,
     ZeroPageIndexedY,

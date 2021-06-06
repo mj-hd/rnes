@@ -366,8 +366,6 @@ impl Ppu {
         let target_y = oam.y as u16;
 
         if cur_y < target_y + size && target_y <= cur_y {
-            trace!("OAM: {:?}", oam);
-
             self.draw_sprite(oam)?;
         }
 
@@ -485,7 +483,7 @@ impl Ppu {
         for i in 0..4 {
             palettes[i] = Color {
                 value: self.bus.read(addr + i as u16)? as usize,
-                transparent: i == 3,
+                transparent: i == 0,
             };
         }
 
@@ -493,7 +491,7 @@ impl Ppu {
     }
 
     fn sprite_palettes(&self, palette_num: u8) -> Result<[Color; 4]> {
-        let base_addr = 0x3F11u16;
+        let base_addr = 0x3F10u16;
         let index_addr = palette_num * 0x04;
         let addr = base_addr + index_addr as u16;
 
@@ -502,7 +500,7 @@ impl Ppu {
         for i in 0..4 {
             palettes[i] = Color {
                 value: self.bus.read(addr + i as u16)? as usize,
-                transparent: i == 3,
+                transparent: i == 0,
             };
         }
 

@@ -48,7 +48,7 @@ impl CpuBus {
             event,
             cycles: 0,
             stalls: 0,
-            wram: [0; 0x0800],
+            wram: [0xFF; 0x0800],
         }
     }
 
@@ -217,7 +217,7 @@ impl PpuBus {
             mmc,
             event,
             cpu_bus_sender,
-            vram: [0; 0x0800],
+            vram: [0xFF; 0x0800],
             palette: [0; 0x0020],
             oam: [0; 0x0100],
         }
@@ -229,8 +229,9 @@ impl PpuBus {
                 PpuBusEvent::Dma(data, oam_addr) => {
                     debug!("RECEIVED DMA: {:#04X}", oam_addr);
 
-                    for addr in (oam_addr as usize)..self.oam.len() {
-                        self.oam[addr as usize] = data[addr as usize];
+                    for i in 0..data.len() {
+                        let addr = i + oam_addr as usize;
+                        self.oam[addr] = data[i];
                     }
                 }
             },
@@ -258,6 +259,7 @@ impl PpuBus {
     pub fn read(&self, addr: u16) -> Result<u8> {
         let addr = match addr {
             0x2800..=0x3EFF => 0x2000 + (addr - 0x2800) % 0x0800,
+            0x3F10..=0x3F1F if addr % 4 == 0 => addr - 0x0010,
             0x3F20..=0x3FFF => 0x3F00 + addr - 0x3F20,
             0x4000..=0xFFFF => addr - 0x4000,
             _ => addr,
@@ -284,6 +286,7 @@ impl PpuBus {
     pub fn write(&mut self, addr: u16, data: u8) -> Result<()> {
         let addr = match addr {
             0x2800..=0x3EFF => 0x2000 + (addr - 0x2800) % 0x0800,
+            0x3F10..=0x3F1F if addr % 4 == 0 => addr - 0x0010,
             0x3F20..=0x3FFF => 0x3F00 + addr - 0x3F20,
             0x4000..=0xFFFF => addr - 0x4000,
             _ => addr,
