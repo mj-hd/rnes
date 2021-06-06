@@ -156,6 +156,23 @@ impl Oam {
             zero,
         }
     }
+
+    #[bitmatch]
+    fn large_tile_base_addr(&self) -> u16 {
+        #[bitmatch]
+        let "tttttttb" = self.tile_num;
+
+        let base_addr = if b == 1 { 0x1000u16 } else { 0x0000u16 };
+        base_addr + t as u16
+    }
+
+    fn tile(&self, row: u8) -> u8 {
+        if row >= 8 {
+            self.tile_num + 1
+        } else {
+            self.tile_num
+        }
+    }
 }
 
 bitfield! {
@@ -359,7 +376,7 @@ impl Ppu {
             self.cur_bg = self.to_colors(indexes, palettes);
         }
 
-        self.bg_line[cx as usize] = self.cur_bg[col as usize];
+        self.bg_line[self.x as usize] = self.cur_bg[col as usize];
 
         Ok(())
     }
@@ -383,9 +400,23 @@ impl Ppu {
     }
 
     fn draw_sprite(&mut self, oam: Oam) -> Result<()> {
-        let row = self.y - oam.y;
-        let tile = oam.tile_num;
-        let indexes = self.to_indexes(tile, row, self.oam_pattern_table_addr())?;
+        let size = if self.ctrl.large_sprite() { 16 } else { 8 };
+
+        let row = if oam.sprite_flag.y_flip() {
+            size - (self.y - oam.y)
+        } else {
+            self.y - oam.y
+        };
+
+        let tile = oam.tile(row);
+
+        let base_addr = if self.ctrl.large_sprite() {
+            oam.large_tile_base_addr()
+        } else {
+            self.oam_pattern_table_addr()
+        };
+
+        let indexes = self.to_indexes(tile, row, base_addr)?;
         let palette_num = oam.sprite_flag.palette_num();
         let palettes = self.sprite_palettes(palette_num)?;
 
@@ -396,6 +427,8 @@ impl Ppu {
         let mut oam_colors = [Default::default(); 8];
 
         for (i, color) in colors.iter().enumerate() {
+            let i = if oam.sprite_flag.x_flip() { 7 - i } else { i };
+
             oam_colors[i] = OamColor {
                 color: *color,
                 behind: oam.sprite_flag.priority(),
@@ -426,10 +459,6 @@ impl Ppu {
     }
 
     fn oam_pattern_table_addr(&self) -> u16 {
-        if self.ctrl.large_sprite() {
-            return 0x0000;
-        }
-
         match self.ctrl.oam_pattern_table() {
             false => 0x0000,
             true => 0x1000,
@@ -679,6 +708,13 @@ impl Ppu {
             self.scroll_x = self.buffer[0];
             self.scroll_y = self.buffer[1];
         }
+
+        trace!(
+            "WRITE SCROLL: {} ({},{})",
+            data,
+            self.scroll_x,
+            self.scroll_y
+        );
 
         Ok(())
     }

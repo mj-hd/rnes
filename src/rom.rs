@@ -13,18 +13,18 @@ use std::{
 bitfield! {
     pub struct Flag1(u8);
     impl Debug;
-    u16, mapper_type_low, _: 7, 4;
-    four_screen_mode, _: 3;
-    has_trainer, _: 2;
-    has_battery, _: 1;
-    mirroring, _: 0;
+    pub u16, mapper_type_low, _: 7, 4;
+    pub four_screen_mode, _: 3;
+    pub has_trainer, _: 2;
+    pub has_battery, _: 1;
+    pub mirroring, _: 0;
 }
 
 bitfield! {
     pub struct Flag2(u8);
     impl Debug;
     u16, mapper_type_middle, _: 7, 4;
-    u8, into ConsoleType, console_type, _: 1, 0;
+    pub u8, into ConsoleType, console_type, _: 1, 0;
 }
 
 bitfield! {
