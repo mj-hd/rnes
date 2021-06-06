@@ -201,6 +201,16 @@ bitfield! {
     u8, palette, _: 1, 0, 4;
 }
 
+impl Attribute {
+    pub fn index_for(&self, tile_x: u8, tile_y: u8) -> u8 {
+        let x = tile_x / 2;
+        let y = tile_y / 2;
+        let x_index = (x + 1) % 2;
+        let y_index = (y + 1) % 2;
+        self.palette((3 - x_index - y_index * 2) as usize)
+    }
+}
+
 pub struct Ppu {
     bus: PpuBus,
 
@@ -317,7 +327,7 @@ impl Ppu {
             Mode::Drawing => {
                 self.draw_bg()?;
 
-                self.put_pixels();
+                self.put_pixels()?;
             }
             Mode::OamScan => {
                 self.draw_sprites(self.cycles % 64)?;
@@ -427,10 +437,10 @@ impl Ppu {
     }
 
     fn bg_attr(&self, tile_x: u8, tile_y: u8) -> Result<Attribute> {
-        let attr_x = tile_x / 2;
-        let attr_y = tile_y / 2;
+        let attr_x = tile_x / 4;
+        let attr_y = tile_y / 4;
         let base_addr = self.name_table_addr() + 0x03C0;
-        let index_addr = attr_x as u16 + (attr_y as u16) * 16;
+        let index_addr = attr_x as u16 + (attr_y as u16) * 8;
         let addr = base_addr.wrapping_add(index_addr as u16);
 
         let attr = Attribute(self.bus.read(addr)?);
@@ -457,10 +467,10 @@ impl Ppu {
         let mut indexes = [0; 8];
 
         #[bitmatch]
-        let "acegikmo" = bit;
+        let "acegikmo" = color;
 
         #[bitmatch]
-        let "bdfhjlnp" = color;
+        let "bdfhjlnp" = bit;
 
         #[bitmatch]
         let "aabbccddeeffgghh" = bitpack!("abcdefghijklmnop");
@@ -474,7 +484,7 @@ impl Ppu {
 
     fn bg_palettes(&self, tile_x: u8, tile_y: u8, attr: Attribute) -> Result<[Color; 4]> {
         let base_addr = 0x3F00u16;
-        let palette_index = attr.palette((3 - tile_x % 2 - (tile_y % 2) * 2) as usize);
+        let palette_index = attr.index_for(tile_x, tile_y);
         let index_addr = palette_index * 0x04;
         let addr = base_addr + index_addr as u16;
 
@@ -517,13 +527,14 @@ impl Ppu {
         colors
     }
 
-    fn put_pixels(&mut self) {
-        let mut pixel = Rgba(COLORS[0]);
+    fn put_pixels(&mut self) -> Result<()> {
+        let backdrop = self.bus.read(0x3F00)? as usize;
+        let mut pixel = Rgba(COLORS[backdrop]);
 
         let bg_color = self.bg_line[self.x as usize];
         let sprite_color = self.oam_line[self.x as usize];
 
-        if self.mask.bg() {
+        if self.mask.bg() && !bg_color.transparent {
             pixel = bg_color.to_pixel();
         }
 
@@ -549,6 +560,8 @@ impl Ppu {
 
         self.bg_line[self.x as usize] = Default::default();
         self.oam_line[self.x as usize] = Default::default();
+
+        Ok(())
     }
 
     pub fn render(&mut self) -> Result<Vec<u8>> {
