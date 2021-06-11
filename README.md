@@ -1,6 +1,6 @@
 # NES Emulator in Rust
 
-<img width="694" alt="Hello World" src="https://user-images.githubusercontent.com/6854255/119796957-c6c54400-bf14-11eb-99f8-c88e3be4c58f.png">
+<img width="806" alt="mario" src="https://user-images.githubusercontent.com/6854255/121690375-bdd19680-cb00-11eb-9825-c2fcd8d72b92.png">
 
 - Language: Rust
 - Graphics Library: [pixels](https://github.com/parasyte/pixels)
