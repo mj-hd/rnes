@@ -3,7 +3,7 @@ use std::fmt::{self, Debug, Display, Formatter, UpperHex};
 use anyhow::Result;
 use bitfield::bitfield;
 use bitmatch::bitmatch;
-use log::{error, trace};
+use log::{debug, error, trace};
 
 use crate::bus::CpuBus;
 
@@ -1036,7 +1036,9 @@ impl Cpu {
     }
 
     fn shy(&mut self, _mode: AddrMode) -> Result<()> {
-        unimplemented!("SHY");
+        debug!("SHY");
+
+        Ok(())
     }
 
     fn _alu<Apply>(&mut self, mode: AddrMode, apply: Apply) -> Result<u16>
@@ -1182,7 +1184,9 @@ impl Cpu {
     }
 
     fn stp(&mut self) -> Result<()> {
-        unimplemented!("STP");
+        debug!("STP");
+
+        Ok(())
     }
 
     fn carry_shr(data: u8) -> bool {
@@ -1471,6 +1475,8 @@ impl Cpu {
     }
 
     fn shx(&mut self, _mode: AddrMode) -> Result<()> {
-        unimplemented!("SHX");
+        debug!("SHX");
+
+        Ok(())
     }
 }
